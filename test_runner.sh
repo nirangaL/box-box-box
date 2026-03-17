@@ -4,7 +4,7 @@
 # Usage: ./test_runner.sh "your_solution_command"
 # Example: ./test_runner.sh "python solution.py"
 
-set -e
+# set -e   # disabled to allow full test run even if a case fails
 
 # Colors for output
 RED='\033[0;31m'
@@ -12,6 +12,30 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
+
+# JSON helper: validate and extract using node (removes jq dependency and tolerates BOM)
+validate_and_extract() {
+    FILE="$1"
+    node - "$FILE" <<'NODE'
+const fs = require('fs');
+const path = process.argv[2];
+try {
+  const raw = fs.readFileSync(path);
+  let txt = raw.toString('utf8');
+  if (txt.charCodeAt(0) === 0xFEFF) txt = txt.slice(1); // strip BOM
+  const data = JSON.parse(txt);
+  if (!data || !Array.isArray(data.finishing_positions)) {
+    console.error('missing finishing_positions');
+    process.exit(2);
+  }
+  console.log(data.finishing_positions.join(','));
+} catch (e) {
+  console.error(e.message);
+  process.exit(1);
+}
+NODE
+}
+
 
 # Configuration
 TEST_CASES_DIR="data/test_cases/inputs"
@@ -27,6 +51,8 @@ if [ ! -f "$RUN_COMMAND_FILE" ]; then
 fi
 
 SOLUTION_CMD=$(cat "$RUN_COMMAND_FILE" | tr -d '\r\n')
+# Strip UTF-8 BOM if present
+SOLUTION_CMD=${SOLUTION_CMD#$'\ufeff'}
 
 # Check if test cases exist
 if [ ! -d "$TEST_CASES_DIR" ]; then
@@ -79,10 +105,8 @@ for TEST_FILE in "${TEST_FILES[@]}"; do
     ERROR_FILE="$TMP_DIR/${TEST_NAME}_error.log"
 
     if cat "$TEST_FILE" | eval "$SOLUTION_CMD" > "$OUTPUT_FILE" 2> "$ERROR_FILE"; then
-        # Check if output is valid JSON
-        if jq empty "$OUTPUT_FILE" 2>/dev/null; then
-            # Extract finishing positions from output
-            PREDICTED=$(jq -r '.finishing_positions | join(",")' "$OUTPUT_FILE" 2>/dev/null)
+        # Check if output is valid JSON and extract positions
+        if PREDICTED=$(validate_and_extract "$OUTPUT_FILE"); then
 
             if [ -z "$PREDICTED" ] || [ "$PREDICTED" == "null" ]; then
                 echo -e "${RED}✗${NC} $TEST_ID - Invalid output format"
@@ -91,13 +115,16 @@ for TEST_FILE in "${TEST_FILES[@]}"; do
                 # Compare with expected output if we have answers
                 ANSWER_FILE="$EXPECTED_OUTPUTS_DIR/${TEST_NAME}.json"
                 if [ -f "$ANSWER_FILE" ]; then
-                    EXPECTED=$(jq -r '.finishing_positions | join(",")' "$ANSWER_FILE" 2>/dev/null)
-
-                    if [ "$PREDICTED" == "$EXPECTED" ]; then
-                        echo -e "${GREEN}✓${NC} $TEST_ID"
-                        ((PASSED++))
+                    if EXPECTED=$(validate_and_extract "$ANSWER_FILE"); then
+                        if [ "$PREDICTED" == "$EXPECTED" ]; then
+                            echo -e "${GREEN}✓${NC} $TEST_ID"
+                            ((PASSED++))
+                        else
+                            echo -e "${RED}✗${NC} $TEST_ID - Incorrect prediction"
+                            ((FAILED++))
+                        fi
                     else
-                        echo -e "${RED}✗${NC} $TEST_ID - Incorrect prediction"
+                        echo -e "${RED}✗${NC} $TEST_ID - Invalid expected output format"
                         ((FAILED++))
                     fi
                 else
