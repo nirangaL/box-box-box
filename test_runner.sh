@@ -160,7 +160,7 @@ echo ""
 # Calculate stats
 PASS_RATE=0
 if [ $TOTAL_TESTS -gt 0 ]; then
-    PASS_RATE=$(echo "scale=1; $PASSED * 100 / $TOTAL_TESTS" | bc)
+    PASS_RATE=$(awk "BEGIN {printf \"%.1f\", $PASSED * 100 / $TOTAL_TESTS}")
 fi
 
 echo -e "Total Tests:    ${YELLOW}$TOTAL_TESTS${NC}"
