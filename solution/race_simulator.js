@@ -3,8 +3,6 @@ const path = require('path');
 
 /**
  * Standard F1 Race Simulator with Advanced Physics
- * Factors: Base Lap, Tire Compound, Quadratic Degradation, Temperature Scaling, 
- * Fuel Load (Pace & Wear), Shelf Life, Pit Exit Penalty, Pit Lane Queue Penalty.
  */
 function simulate(race, p_override = null) {
     const { base_lap_time: base, track_temp: temp, pit_lane_time: pit, total_laps: total } = race.race_config;
@@ -24,8 +22,6 @@ function simulate(race, p_override = null) {
         });
     }
 
-    const tDelta = temp - 30;
-
     // Load parameters
     let p = p_override;
     if (!p) {
@@ -34,12 +30,11 @@ function simulate(race, p_override = null) {
             const pData = JSON.parse(fs.readFileSync(pFile, 'utf8'));
             p = pData.params;
         } catch (e) {
-            // Fallback to sensible defaults
             p = {
                 offset: { SOFT: -0.05, MEDIUM: -0.03, HARD: -0.01 },
                 tempCoeff: { SOFT: 0.02, MEDIUM: 0.02, HARD: 0.02 },
                 degr1: { SOFT: 0.015, MEDIUM: 0.008, HARD: 0.004 },
-                degr2: { SOFT: 0.0001, MEDIUM: 0.00005, HARD: 0.00002 },
+                degrExp: { SOFT: 2.0, MEDIUM: 2.0, HARD: 2.0 },
                 freshBonus: { SOFT: -0.5, MEDIUM: -0.5, HARD: -0.5 },
                 pitExitPenalty: 0,
                 shelfLife: { SOFT: 10, MEDIUM: 20, HARD: 30 },
@@ -52,11 +47,14 @@ function simulate(race, p_override = null) {
 
     // Ensure all required fields exist in p
     const ensure = (obj, field, def) => { if (obj[field] === undefined) obj[field] = def; };
+    const tempRef = p.tempRef || 30;
+    const tDelta = temp - tempRef;
+
     ['SOFT', 'MEDIUM', 'HARD'].forEach(t => {
         ensure(p.offset, t, 0);
         ensure(p.tempCoeff, t, 0);
         ensure(p.degr1, t, 0);
-        ensure(p.degr2, t, 0);
+        ensure(p.degrExp || (p.degrExp = {}), t, 2);
         ensure(p.freshBonus, t, 0);
         ensure(p.shelfLife, t, 0);
         ensure(p.fuelPace || (p.fuelPace = {}), t, 0);
@@ -67,40 +65,29 @@ function simulate(race, p_override = null) {
 
     // Simulation Loop
     for (let lap = 1; lap <= total; lap++) {
-        // Fuel load: 1.0 at start (lap 1), approaching 0.0 at the end
-        const fuel = (total - lap) / total;
+        const fuelBonus = (lap - 1) / total;
 
         for (const c of cars) {
             c.age++;
             const ti = c.tire;
-            
-            // 1. Shelf Life: tires don't wear much initially
             const wearAge = Math.max(0, c.age - p.shelfLife[ti]);
+            const wearScale = (1 + p.tempCoeff[ti] * tDelta) * (1 - p.fuelWear[ti] * fuelBonus);
+            // 3. Power Law Degradation: age ^ exponent
+            const wearEffect = p.degr1[ti] * Math.pow(wearAge, p.degrExp[ti] || 2) * wearScale;
             
-            // 2. Wear Scaling: temp and fuel-wear interaction
-            const wearScale = (1 + p.tempCoeff[ti] * tDelta) * (1 + p.fuelWear[ti] * fuel);
-            
-            // 3. Quadratic Degradation
-            const wearEffect = (p.degr1[ti] * wearAge + p.degr2[ti] * wearAge * wearAge) * wearScale;
-            
-            // 4. Lap Time Calculation
-            // Base + Compound Offset + Wear + Fuel Pace + Fresh Bonus + Pit Exit
-            const lapTime = base * (1 + p.offset[ti] + wearEffect + p.fuelPace[ti] * fuel)
+            // 4. Lap Time Calculation: Base * (1 + Compound + Wear - Fuel Advantage) + Fresh Bonus + Pit Exit
+            const lapTime = base * (1 + p.offset[ti] + wearEffect - p.fuelPace[ti] * fuelBonus)
                           + (c.age === 1 ? p.freshBonus[ti] : 0)
                           + (c.si > 0 && c.age === 1 ? p.pitExitPenalty : 0);
             
             c.time += lapTime;
         }
 
-        // Handle Pit Stops at end of lap
         let pitting = cars.filter(c => c.si < c.stops.length && c.stops[c.si].lap === lap);
         if (pitting.length > 0) {
-            // Sort by arrival time at pit entry (current race time)
             pitting.sort((a, b) => (a.time - b.time) || (a.grid - b.grid));
             pitting.forEach((c, q) => {
-                // Apply pit penalty + queue delay
                 c.time += pit + q * p.queuePenalty;
-                // Change tires
                 c.tire = c.stops[c.si].to_tire.toUpperCase();
                 c.age = 0;
                 c.si++;
@@ -108,7 +95,6 @@ function simulate(race, p_override = null) {
         }
     }
 
-    // Final Sort: total race time, then starting grid as tie-breaker
     return cars.sort((a, b) => (a.time - b.time) || (a.grid - b.grid)).map(x => x.id);
 }
 
@@ -125,7 +111,6 @@ function runFromStdin() {
                 finishing_positions: finishing
             }) + '\n');
         } catch (err) {
-            console.error(err.message);
             process.exit(1);
         }
     });
