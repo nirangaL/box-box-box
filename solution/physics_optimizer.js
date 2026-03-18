@@ -41,14 +41,15 @@ function pToObj(arr) {
         offset: { SOFT: arr[0], MEDIUM: arr[1], HARD: arr[2] },
         tempCoeff: { SOFT: arr[3], MEDIUM: arr[4], HARD: arr[5] },
         degr1: { SOFT: arr[6], MEDIUM: arr[7], HARD: arr[8] },
-        degrExp: { SOFT: arr[9], MEDIUM: arr[10], HARD: arr[11] },
-        freshBonus: { SOFT: arr[12], MEDIUM: arr[13], HARD: arr[14] },
-        shelfLife: { SOFT: arr[15], MEDIUM: arr[16], HARD: arr[17] },
-        fuelPace: { SOFT: arr[18], MEDIUM: arr[19], HARD: arr[20] },
-        fuelWear: { SOFT: arr[21], MEDIUM: arr[22], HARD: arr[23] },
-        pitExitPenalty: arr[24],
-        queuePenalty: arr[25],
-        tempRef: arr[26]
+        degr2: { SOFT: arr[9], MEDIUM: arr[10], HARD: arr[11] },
+        degrExp: { SOFT: arr[12], MEDIUM: arr[13], HARD: arr[14] },
+        freshBonus: { SOFT: arr[15], MEDIUM: arr[16], HARD: arr[17] },
+        shelfLife: { SOFT: arr[18], MEDIUM: arr[19], HARD: arr[20] },
+        fuelPace: { SOFT: arr[21], MEDIUM: arr[22], HARD: arr[23] },
+        fuelWear: { SOFT: arr[24], MEDIUM: arr[25], HARD: arr[26] },
+        pitExitPenalty: arr[27],
+        queuePenalty: arr[28],
+        tempRef: arr[29]
     };
 }
 
@@ -60,6 +61,7 @@ async function main() {
         bp.offset.SOFT, bp.offset.MEDIUM, bp.offset.HARD,
         bp.tempCoeff.SOFT, bp.tempCoeff.MEDIUM, bp.tempCoeff.HARD,
         bp.degr1.SOFT, bp.degr1.MEDIUM, bp.degr1.HARD,
+        bp.degr2.SOFT, bp.degr2.MEDIUM, bp.degr2.HARD,
         2.0, 2.0, 2.0, // degrExp
         bp.freshBonus.SOFT, bp.freshBonus.MEDIUM, bp.freshBonus.HARD,
         bp.shelfLife.SOFT, bp.shelfLife.MEDIUM, bp.shelfLife.HARD,
@@ -69,7 +71,7 @@ async function main() {
     ];
 
     let popSize = 100;
-    let population = Array.from({length: popSize}, () => initialArr.map((v, idx) => v + (Math.random()-0.5)*(idx >= 9 && idx <= 11 ? 0.5 : 0.01)));
+    let population = Array.from({length: popSize}, () => initialArr.map((v, idx) => v + (Math.random()-0.5)*(idx >= 12 && idx <= 14 ? 0.5 : 0.01)));
     population[0] = [...initialArr];
     let scores = population.map((p, i) => {
         const s = getScore(pToObj(p), cases);
@@ -87,7 +89,7 @@ async function main() {
             const mutant = population[a].map((val, idx) => {
                 if (Math.random() < 0.9) {
                     let v = val + 0.8 * (population[b][idx] - population[c][idx]);
-                    if (idx >= 9 && idx <= 11) v = Math.max(1.0, Math.min(4.0, v)); // exp
+                    if (idx >= 12 && idx <= 14) v = Math.max(1.0, Math.min(4.0, v)); // exp
                     return v;
                 }
                 return population[i][idx];

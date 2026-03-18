@@ -34,6 +34,7 @@ function simulate(race, p_override = null) {
                 offset: { SOFT: -0.05, MEDIUM: -0.03, HARD: -0.01 },
                 tempCoeff: { SOFT: 0.02, MEDIUM: 0.02, HARD: 0.02 },
                 degr1: { SOFT: 0.015, MEDIUM: 0.008, HARD: 0.004 },
+                degr2: { SOFT: 0.0001, MEDIUM: 0.00005, HARD: 0.00002 },
                 degrExp: { SOFT: 2.0, MEDIUM: 2.0, HARD: 2.0 },
                 freshBonus: { SOFT: -0.5, MEDIUM: -0.5, HARD: -0.5 },
                 pitExitPenalty: 0,
@@ -54,6 +55,7 @@ function simulate(race, p_override = null) {
         ensure(p.offset, t, 0);
         ensure(p.tempCoeff, t, 0);
         ensure(p.degr1, t, 0);
+        ensure(p.degr2, t, 0);
         ensure(p.degrExp || (p.degrExp = {}), t, 2);
         ensure(p.freshBonus, t, 0);
         ensure(p.shelfLife, t, 0);
@@ -72,8 +74,8 @@ function simulate(race, p_override = null) {
             const ti = c.tire;
             const wearAge = Math.max(0, c.age - p.shelfLife[ti]);
             const wearScale = (1 + p.tempCoeff[ti] * tDelta) * (1 - p.fuelWear[ti] * fuelBonus);
-            // 3. Power Law Degradation: age ^ exponent
-            const wearEffect = p.degr1[ti] * Math.pow(wearAge, p.degrExp[ti] || 2) * wearScale;
+            // 3. Power Law Degradation: age + age ^ exponent
+            const wearEffect = (p.degr1[ti] * wearAge + p.degr2[ti] * Math.pow(wearAge, p.degrExp[ti] || 2)) * wearScale;
             
             // 4. Lap Time Calculation: Base * (1 + Compound + Wear - Fuel Advantage) + Fresh Bonus + Pit Exit
             const lapTime = base * (1 + p.offset[ti] + wearEffect - p.fuelPace[ti] * fuelBonus)
