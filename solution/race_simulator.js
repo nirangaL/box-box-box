@@ -1,113 +1,58 @@
 const fs = require('fs');
 const path = require('path');
 
-/**
- * FINAL RACE SIMULATOR
- * 
- * Features:
- * - Relative Standard Shelf Model
- * - Pit Stop Queue Penalty (based on arrival order)
- * - Explicit grid-based tie-breaking
- */
-
-function loadParams() {
-  const p = path.join(__dirname, 'learned_params.json');
-  if (fs.existsSync(p)) {
-    const data = JSON.parse(fs.readFileSync(p, 'utf8'));
-    if (data && data.params) return data.params;
-  }
-  return null;
-}
-
-const params = loadParams();
-
-// Fallback defaults
-const defaults = {
-  offset: { SOFT: -0.045, MEDIUM: -0.035, HARD: -0.025 },
-  tempCoeff: { SOFT: 0.015, MEDIUM: 0.015, HARD: 0.015 },
-  degr1: { SOFT: 0.02, MEDIUM: 0.01, HARD: 0.005 },
-  degr2: { SOFT: 0.0001, MEDIUM: 0.00005, HARD: 0.00001 },
-  freshBonus: { SOFT: -0.5, MEDIUM: -0.5, HARD: -0.5 },
-  pitExitPenalty: 0.2,
-  shelfLife: { SOFT: 10, MEDIUM: 20, HARD: 30 },
-  queuePenalty: 0.5
-};
-
-function get(group, tire, fallback) {
-  if (params && params[group] && params[group][tire] !== undefined) return params[group][tire];
-  if (params && params[group] !== undefined && typeof params[group] !== 'object') return params[group];
-  if (defaults[group] && defaults[group][tire] !== undefined) return defaults[group][tire];
-  return defaults[group] !== undefined ? defaults[group] : fallback;
+function getP(p, group, tire, fallback) {
+    if (!p) return fallback;
+    if (p[group] && p[group][tire] !== undefined) return p[group][tire];
+    if (p[group] !== undefined && typeof p[group] !== 'object') return p[group];
+    return fallback;
 }
 
 function simulate(race) {
-  const rc = race.race_config;
-  const base = rc.base_lap_time;
-  const temp = rc.track_temp;
-  const pit = rc.pit_lane_time;
-  const totalLaps = rc.total_laps;
-
-  const cars = [];
-  for (let i = 1; i <= 20; i++) {
-    const stratKey = `pos${i}`;
-    const strat = race.strategies[stratKey];
-    cars.push({
-      id: strat.driver_id,
-      grid: i,
-      tire: strat.starting_tire,
-      age: 0,
-      totalTime: 0,
-      stops: (strat.pit_stops || []).slice().sort((a,b) => a.lap - b.lap),
-      stopIdx: 0
-    });
-  }
-
-  for (let lap = 1; lap <= totalLaps; lap++) {
-    // 1. Lap times
-    for (const car of cars) {
-      car.age++;
-      const tire = car.tire;
-      const shelf = get('shelfLife', tire, 0);
-      const wearAge = Math.max(0, car.age - shelf);
-      const tempDelta = temp - 30;
-      const wearEffect = (get('degr1', tire, 0) * wearAge + get('degr2', tire, 0) * wearAge * wearAge) * (1 + get('tempCoeff', tire, 0) * tempDelta);
-      
-      const lapTime = base * (1 + get('offset', tire, 0) + wearEffect)
-        + (car.age === 1 ? get('freshBonus', tire, 0) : 0)
-        + (car.stopIdx > 0 && car.age === 1 ? get('pitExitPenalty', tire, 0) : 0);
-        
-      car.totalTime += lapTime;
+    const rc = race.race_config, base = rc.base_lap_time, temp = rc.track_temp, pit = rc.pit_lane_time, total = rc.total_laps;
+    const cars = [];
+    for (let i = 1; i <= 20; i++) {
+        const s = race.strategies[`pos${i}`];
+        cars.push({ id: s.driver_id, grid: i, tire: s.starting_tire, age: 0, time: 0, stops: s.pit_stops || [], si: 0 });
     }
+    const tDelta = temp - 30;
 
-    // 2. Pit stops
-    const pittingIndices = [];
-    for (let i = 0; i < 20; i++) {
-      if (cars[i].stopIdx < cars[i].stops.length && cars[i].stops[cars[i].stopIdx].lap === lap) {
-        pittingIndices.push(i);
-      }
+    // Load parameters here, assume they are passed as process env or fetched if undefined
+    // For now we load the DE ones directly inside
+    let pObj = null;
+    try {
+        pObj = JSON.parse(fs.readFileSync(path.join(__dirname, 'learned_params.json'), 'utf8')).params;
+    } catch(e) {}
+    
+    // Explicit array extraction to perfectly match track_stats
+    const p = [
+        getP(pObj, 'offset', 'SOFT', -0.05), getP(pObj, 'offset', 'MEDIUM', -0.03), getP(pObj, 'offset', 'HARD', -0.01),
+        getP(pObj, 'tempCoeff', 'SOFT', 0.02), getP(pObj, 'tempCoeff', 'MEDIUM', 0.02), getP(pObj, 'tempCoeff', 'HARD', 0.02),
+        getP(pObj, 'degr1', 'SOFT', 0.01), getP(pObj, 'degr1', 'MEDIUM', 0.005), getP(pObj, 'degr1', 'HARD', 0.002),
+        getP(pObj, 'degr2', 'SOFT', 0), getP(pObj, 'degr2', 'MEDIUM', 0), getP(pObj, 'degr2', 'HARD', 0),
+        getP(pObj, 'freshBonus', 'SOFT', -0.5), getP(pObj, 'freshBonus', 'MEDIUM', -0.5), getP(pObj, 'freshBonus', 'HARD', -0.5),
+        getP(pObj, 'pitExitPenalty', null, 0),
+        getP(pObj, 'shelfLife', 'SOFT', 10), getP(pObj, 'shelfLife', 'MEDIUM', 20), getP(pObj, 'shelfLife', 'HARD', 30),
+        getP(pObj, 'queuePenalty', null, 0)
+    ];
+
+    for (let lap = 1; lap <= total; lap++) {
+        for (const c of cars) {
+            c.age++;
+            const ti = c.tire[0] === 'S' ? 0 : c.tire[0] === 'M' ? 1 : 2;
+            const wearAge = Math.max(0, c.age - p[16 + ti]);
+            const wearEffect = (p[6 + ti] * wearAge + p[9 + ti] * wearAge * wearAge) * (1 + p[3 + ti] * tDelta);
+            c.time += base * (1 + p[ti] + wearEffect) + (c.age === 1 ? p[12 + ti] : 0) + (c.si > 0 && c.age === 1 ? p[15] : 0);
+        }
+        let pitting = cars.filter(c => c.si < c.stops.length && c.stops[c.si].lap === lap);
+        pitting.sort((a,b) => (a.time - b.time) || (a.grid - b.grid));
+        pitting.forEach((c) => {
+            c.time += pit + p[19];
+            c.tire = c.stops[c.si].to_tire; c.age = 0; c.si++;
+        });
     }
-
-    if (pittingIndices.length > 0) {
-      pittingIndices.sort((a, b) => {
-        const ca = cars[a], cb = cars[b];
-        if (Math.abs(ca.totalTime - cb.totalTime) < 1e-9) return ca.grid - cb.grid;
-        return ca.totalTime - cb.totalTime;
-      });
-
-      for (let q = 0; q < pittingIndices.length; q++) {
-        const car = cars[pittingIndices[q]];
-        car.totalTime += pit + q * get('queuePenalty', null, 0);
-        car.tire = car.stops[car.stopIdx].to_tire;
-        car.age = 0;
-        car.stopIdx++;
-      }
-    }
-  }
-
-  return cars.sort((a, b) => {
-    if (Math.abs(a.totalTime - b.totalTime) < 1e-9) return a.grid - b.grid;
-    return a.totalTime - b.totalTime;
-  }).map(x => x.id);
+    
+    return cars.sort((a,b) => (a.time - b.time) || (a.grid - b.grid)).map(x=>x.id);
 }
 
 function runFromStdin() {
