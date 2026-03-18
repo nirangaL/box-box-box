@@ -1,76 +1,134 @@
 const fs = require('fs');
 const path = require('path');
 
-function getP(p, group, tire, fallback) {
-    if (!p) return fallback;
-    if (p[group] && p[group][tire] !== undefined) return p[group][tire];
-    if (p[group] !== undefined && typeof p[group] !== 'object') return p[group];
-    return fallback;
-}
-
-function simulate(race) {
-    const rc = race.race_config, base = rc.base_lap_time, temp = rc.track_temp, pit = rc.pit_lane_time, total = rc.total_laps;
+/**
+ * Standard F1 Race Simulator with Advanced Physics
+ * Factors: Base Lap, Tire Compound, Quadratic Degradation, Temperature Scaling, 
+ * Fuel Load (Pace & Wear), Shelf Life, Pit Exit Penalty, Pit Lane Queue Penalty.
+ */
+function simulate(race, p_override = null) {
+    const { base_lap_time: base, track_temp: temp, pit_lane_time: pit, total_laps: total } = race.race_config;
     const cars = [];
+    
+    // Initialize cars
     for (let i = 1; i <= 20; i++) {
         const s = race.strategies[`pos${i}`];
-        cars.push({ id: s.driver_id, grid: i, tire: s.starting_tire, age: 0, time: 0, stops: s.pit_stops || [], si: 0 });
-    }
-    const tDelta = temp - 30;
-
-    // Load parameters here, assume they are passed as process env or fetched if undefined
-    // For now we load the DE ones directly inside
-    let pObj = null;
-    try {
-        pObj = JSON.parse(fs.readFileSync(path.join(__dirname, 'learned_params.json'), 'utf8')).params;
-    } catch(e) {}
-    
-    // Explicit array extraction to perfectly match track_stats
-    const p = [
-        getP(pObj, 'offset', 'SOFT', -0.05), getP(pObj, 'offset', 'MEDIUM', -0.03), getP(pObj, 'offset', 'HARD', -0.01),
-        getP(pObj, 'tempCoeff', 'SOFT', 0.02), getP(pObj, 'tempCoeff', 'MEDIUM', 0.02), getP(pObj, 'tempCoeff', 'HARD', 0.02),
-        getP(pObj, 'degr1', 'SOFT', 0.01), getP(pObj, 'degr1', 'MEDIUM', 0.005), getP(pObj, 'degr1', 'HARD', 0.002),
-        getP(pObj, 'degr2', 'SOFT', 0), getP(pObj, 'degr2', 'MEDIUM', 0), getP(pObj, 'degr2', 'HARD', 0),
-        getP(pObj, 'freshBonus', 'SOFT', -0.5), getP(pObj, 'freshBonus', 'MEDIUM', -0.5), getP(pObj, 'freshBonus', 'HARD', -0.5),
-        getP(pObj, 'pitExitPenalty', null, 0),
-        getP(pObj, 'shelfLife', 'SOFT', 10), getP(pObj, 'shelfLife', 'MEDIUM', 20), getP(pObj, 'shelfLife', 'HARD', 30),
-        getP(pObj, 'queuePenalty', null, 0)
-    ];
-
-    for (let lap = 1; lap <= total; lap++) {
-        for (const c of cars) {
-            c.age++;
-            const ti = c.tire[0] === 'S' ? 0 : c.tire[0] === 'M' ? 1 : 2;
-            const wearAge = Math.max(0, c.age - p[16 + ti]);
-            const wearEffect = (p[6 + ti] * wearAge + p[9 + ti] * wearAge * wearAge) * (1 + p[3 + ti] * tDelta);
-            c.time += base * (1 + p[ti] + wearEffect) + (c.age === 1 ? p[12 + ti] : 0) + (c.si > 0 && c.age === 1 ? p[15] : 0);
-        }
-        let pitting = cars.filter(c => c.si < c.stops.length && c.stops[c.si].lap === lap);
-        pitting.sort((a,b) => (a.time - b.time) || (a.grid - b.grid));
-        pitting.forEach((c) => {
-            c.time += pit + p[19];
-            c.tire = c.stops[c.si].to_tire; c.age = 0; c.si++;
+        cars.push({ 
+            id: s.driver_id, 
+            grid: i, 
+            tire: s.starting_tire.toUpperCase(), 
+            age: 0, 
+            time: 0, 
+            stops: s.pit_stops || [], 
+            si: 0 
         });
     }
-    
-    return cars.sort((a,b) => (a.time - b.time) || (a.grid - b.grid)).map(x=>x.id);
+
+    const tDelta = temp - 30;
+
+    // Load parameters
+    let p = p_override;
+    if (!p) {
+        try {
+            const pFile = path.join(__dirname, 'learned_params.json');
+            const pData = JSON.parse(fs.readFileSync(pFile, 'utf8'));
+            p = pData.params;
+        } catch (e) {
+            // Fallback to sensible defaults
+            p = {
+                offset: { SOFT: -0.05, MEDIUM: -0.03, HARD: -0.01 },
+                tempCoeff: { SOFT: 0.02, MEDIUM: 0.02, HARD: 0.02 },
+                degr1: { SOFT: 0.015, MEDIUM: 0.008, HARD: 0.004 },
+                degr2: { SOFT: 0.0001, MEDIUM: 0.00005, HARD: 0.00002 },
+                freshBonus: { SOFT: -0.5, MEDIUM: -0.5, HARD: -0.5 },
+                pitExitPenalty: 0,
+                shelfLife: { SOFT: 10, MEDIUM: 20, HARD: 30 },
+                queuePenalty: 0.5,
+                fuelPace: { SOFT: 0.1, MEDIUM: 0.1, HARD: 0.1 },
+                fuelWear: { SOFT: 0.1, MEDIUM: 0.1, HARD: 0.1 }
+            };
+        }
+    }
+
+    // Ensure all required fields exist in p
+    const ensure = (obj, field, def) => { if (obj[field] === undefined) obj[field] = def; };
+    ['SOFT', 'MEDIUM', 'HARD'].forEach(t => {
+        ensure(p.offset, t, 0);
+        ensure(p.tempCoeff, t, 0);
+        ensure(p.degr1, t, 0);
+        ensure(p.degr2, t, 0);
+        ensure(p.freshBonus, t, 0);
+        ensure(p.shelfLife, t, 0);
+        ensure(p.fuelPace || (p.fuelPace = {}), t, 0);
+        ensure(p.fuelWear || (p.fuelWear = {}), t, 0);
+    });
+    ensure(p, 'pitExitPenalty', 0);
+    ensure(p, 'queuePenalty', 0);
+
+    // Simulation Loop
+    for (let lap = 1; lap <= total; lap++) {
+        // Fuel load: 1.0 at start (lap 1), approaching 0.0 at the end
+        const fuel = (total - lap) / total;
+
+        for (const c of cars) {
+            c.age++;
+            const ti = c.tire;
+            
+            // 1. Shelf Life: tires don't wear much initially
+            const wearAge = Math.max(0, c.age - p.shelfLife[ti]);
+            
+            // 2. Wear Scaling: temp and fuel-wear interaction
+            const wearScale = (1 + p.tempCoeff[ti] * tDelta) * (1 + p.fuelWear[ti] * fuel);
+            
+            // 3. Quadratic Degradation
+            const wearEffect = (p.degr1[ti] * wearAge + p.degr2[ti] * wearAge * wearAge) * wearScale;
+            
+            // 4. Lap Time Calculation
+            // Base + Compound Offset + Wear + Fuel Pace + Fresh Bonus + Pit Exit
+            const lapTime = base * (1 + p.offset[ti] + wearEffect + p.fuelPace[ti] * fuel)
+                          + (c.age === 1 ? p.freshBonus[ti] : 0)
+                          + (c.si > 0 && c.age === 1 ? p.pitExitPenalty : 0);
+            
+            c.time += lapTime;
+        }
+
+        // Handle Pit Stops at end of lap
+        let pitting = cars.filter(c => c.si < c.stops.length && c.stops[c.si].lap === lap);
+        if (pitting.length > 0) {
+            // Sort by arrival time at pit entry (current race time)
+            pitting.sort((a, b) => (a.time - b.time) || (a.grid - b.grid));
+            pitting.forEach((c, q) => {
+                // Apply pit penalty + queue delay
+                c.time += pit + q * p.queuePenalty;
+                // Change tires
+                c.tire = c.stops[c.si].to_tire.toUpperCase();
+                c.age = 0;
+                c.si++;
+            });
+        }
+    }
+
+    // Final Sort: total race time, then starting grid as tie-breaker
+    return cars.sort((a, b) => (a.time - b.time) || (a.grid - b.grid)).map(x => x.id);
 }
 
 function runFromStdin() {
-  const chunks = [];
-  process.stdin.on('data', chunk => chunks.push(chunk));
-  process.stdin.on('end', () => {
-    const input = Buffer.concat(chunks).toString().trim();
-    if (!input) return;
-    try {
-      const race = JSON.parse(input);
-      const finishing = simulate(race);
-      const output = { race_id: race.race_id, finishing_positions: finishing };
-      process.stdout.write(JSON.stringify(output) + '\n');
-    } catch (err) {
-      console.error(err.message || String(err));
-      process.exit(1);
-    }
-  });
+    let input = '';
+    process.stdin.on('data', chunk => { input += chunk; });
+    process.stdin.on('end', () => {
+        if (!input.trim()) return;
+        try {
+            const race = JSON.parse(input);
+            const finishing = simulate(race);
+            process.stdout.write(JSON.stringify({
+                race_id: race.race_id,
+                finishing_positions: finishing
+            }) + '\n');
+        } catch (err) {
+            console.error(err.message);
+            process.exit(1);
+        }
+    });
 }
 
 if (require.main === module) runFromStdin();
